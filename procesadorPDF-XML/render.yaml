@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: xml-pdf-converter
+    runtime: python
+    buildCommand: pip install -r requirements.txt && python -m gunicorn main:app
+    startCommand: gunicorn --worker-tmp-dir /dev/shm main:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.12
