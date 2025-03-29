@@ -301,4 +301,5 @@ def optimize_pdf_size(input_pdf, output_dir=None, target_dpi=300):
         return None
 
 if __name__ == '__main__':
-    app.run(debug=True)
+   port = int(os.environ.get('PORT', 10000))
+   app.run(host='0.0.0.0', port=port)
