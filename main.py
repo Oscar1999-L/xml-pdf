@@ -16,6 +16,15 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = tempfile.mkdtemp()
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
 ALLOWED_EXTENSIONS = {'pdf', 'xml'}
+# Configuración crítica para Render
+app.config['SERVER_NAME'] = None  # Desactiva el check de hostname
+app.config['PREFERRED_URL_SCHEME'] = 'https'
+app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
+
+# Endpoint de verificación de salud
+@app.route('/health')
+def health_check():
+    return "OK", 200
 
 # Variable global para almacenar el último archivo procesado
 last_processed_file = None
