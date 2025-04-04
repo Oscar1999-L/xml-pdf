@@ -95,109 +95,65 @@ class PDFProcessor:
             print(f"Error en compresión Pillow: {str(e)}")
             return image_data
 
-    def combinar_archivos(self, archivos, output_dir="resultados", modo="pares", output_name=None):
-        """Versión final del método de combinación"""
+    def combinar_archivos(self, archivos, output_path, modo="pares"):
+        """Combina archivos en un solo PDF"""
         try:
-            # Validación y preparación
             archivos = [f for f in archivos if os.path.exists(f)]
             if not archivos:
-                print("Error: No se encontraron archivos válidos")
-                return None
+                raise ValueError("No hay archivos válidos para combinar")
 
-            os.makedirs(output_dir, exist_ok=True)
-            output_name = output_name or "combinado.pdf"
-            if not output_name.lower().endswith('.pdf'):
-                output_name += '.pdf'
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-            output_path = os.path.join(output_dir, output_name)
+            merger = PdfMerger()
             temp_files = []
 
-            # Procesamiento según el modo
-            merger = PdfMerger()
-            temp_combined = os.path.join(self.temp_dir, "temp_combined.pdf")
-            temp_files.append(temp_combined)
+            try:
+                if modo == "pares":
+                    grupos = {}
+                    for archivo in archivos:
+                        base = os.path.splitext(os.path.basename(archivo))[0]
+                        if archivo.lower().endswith('.xml'):
+                            base = base[:-4]  # Quitar .xml para agrupar bien
+                        grupos.setdefault(base, []).append(archivo)
 
-            if modo == "pares":
-                self._process_pair_mode(merger, archivos, temp_files)
-            else:
-                self._process_full_mode(merger, archivos, temp_files)
+                    for grupo in grupos.values():
+                        pdfs = sorted([f for f in grupo if f.lower().endswith('.pdf')])
+                        xmls = sorted([f for f in grupo if f.lower().endswith('.xml')])
 
-            # Generar PDF combinado
-            with open(temp_combined, "wb") as f:
-                merger.write(f)
+                        for archivo in pdfs:
+                            optimized = self._optimize_pdf(archivo)
+                            if optimized:
+                                temp_files.append(optimized)
+                                merger.append(optimized)
 
-            # Optimización final
-            if not self._optimize_pdf(temp_combined, output_path):
-                shutil.copy(temp_combined, output_path)
+                        for archivo in xmls:
+                            temp_pdf = os.path.join(self.temp_dir, f"temp_{os.path.basename(archivo)}.pdf")
+                            if self._convert_xml_to_pdf(archivo, temp_pdf):
+                                temp_files.append(temp_pdf)
+                                merger.append(temp_pdf)
+                else:
+                    for archivo in archivos:
+                        if archivo.lower().endswith('.xml'):
+                            temp_pdf = os.path.join(self.temp_dir, f"temp_{os.path.basename(archivo)}.pdf")
+                            if self._convert_xml_to_pdf(archivo, temp_pdf):
+                                temp_files.append(temp_pdf)
+                                merger.append(temp_pdf)
+                        else:
+                            optimized = self._optimize_pdf(archivo)
+                            if optimized:
+                                temp_files.append(optimized)
+                                merger.append(optimized)
 
-            return output_path
+                merger.write(output_path)
+                return output_path
+
+            finally:
+                merger.close()
+                self._limpiar_temporales(temp_files)
 
         except Exception as e:
-            print(f"Error crítico al combinar archivos: {str(e)}")
+            print(f"Error en combinar_archivos: {str(e)}")
             return None
-        finally:
-            # Limpieza garantizada
-            if 'merger' in locals():
-                merger.close()
-            self._cleanup_files(temp_files)def combinar_archivos(self, archivos, output_path, modo="pares"):
-    """Combina archivos en un solo PDF"""
-    try:
-        archivos = [f for f in archivos if os.path.exists(f)]
-        if not archivos:
-            raise ValueError("No hay archivos válidos para combinar")
-
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-        merger = PdfMerger()
-        temp_files = []
-
-        try:
-            if modo == "pares":
-                grupos = {}
-                for archivo in archivos:
-                    base = os.path.splitext(os.path.basename(archivo))[0]
-                    if archivo.lower().endswith('.xml'):
-                        base = base[:-4]  # Quitar .xml para agrupar bien
-                    grupos.setdefault(base, []).append(archivo)
-
-                for grupo in grupos.values():
-                    pdfs = sorted([f for f in grupo if f.lower().endswith('.pdf')])
-                    xmls = sorted([f for f in grupo if f.lower().endswith('.xml')])
-
-                    for archivo in pdfs:
-                        optimized = self._optimize_pdf(archivo)
-                        if optimized:
-                            temp_files.append(optimized)
-                            merger.append(optimized)
-
-                    for archivo in xmls:
-                        temp_pdf = os.path.join(self.temp_dir, f"temp_{os.path.basename(archivo)}.pdf")
-                        if self._convert_xml_to_pdf(archivo, temp_pdf):
-                            temp_files.append(temp_pdf)
-                            merger.append(temp_pdf)
-            else:
-                for archivo in archivos:
-                    if archivo.lower().endswith('.xml'):
-                        temp_pdf = os.path.join(self.temp_dir, f"temp_{os.path.basename(archivo)}.pdf")
-                        if self._convert_xml_to_pdf(archivo, temp_pdf):
-                            temp_files.append(temp_pdf)
-                            merger.append(temp_pdf)
-                    else:
-                        optimized = self._optimize_pdf(archivo)
-                        if optimized:
-                            temp_files.append(optimized)
-                            merger.append(optimized)
-
-            merger.write(output_path)
-            return output_path
-
-        finally:
-            merger.close()
-            self._limpiar_temporales(temp_files)
-
-    except Exception as e:
-        print(f"Error en combinar_archivos: {str(e)}")
-        return None
 
     def _process_pair_mode(self, merger, archivos, temp_files):
         """Procesamiento para modo pares"""
