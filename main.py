@@ -6,7 +6,7 @@ import zipfile
 import fitz  # PyMuPDF
 import io
 import shutil
-from PIL import Image
+from PIL import Image, ImageEnhance
 from threading import Timer
 from converters.xml_to_pdf import XMLtoPDFConverter
 from converters.pdf_processor import PDFProcessor
@@ -16,21 +16,15 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = tempfile.mkdtemp()
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
 ALLOWED_EXTENSIONS = {'pdf', 'xml'}
-# Configuración crítica para Render
-app.config['SERVER_NAME'] = None  # Desactiva el check de hostname
-app.config['PREFERRED_URL_SCHEME'] = 'https'
-app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
 
-# Endpoint de verificación de salud
+
 @app.route('/health')
 def health_check():
     return "OK", 200
 
-# Variable global para almacenar el último archivo procesado
 last_processed_file = None
 
 def cleanup_temp_files(temp_dir):
-    """Elimina los archivos temporales después de un tiempo"""
     try:
         shutil.rmtree(temp_dir, ignore_errors=True)
     except Exception as e:
@@ -43,6 +37,12 @@ def index():
 @app.route('/upload', methods=['POST'])
 def upload_files():
     global last_processed_file
+    modo = request.form.get('modo', 'pares')
+    color_mode = request.form.get('color_mode', 'grayscale')
+    if color_mode not in ['grayscale', 'color']:
+        color_mode = 'grayscale'
+    grayscale = color_mode == 'grayscale'
+    custom_name = request.form.get('custom_name', '').strip()
 
     if 'files' not in request.files:
         return jsonify({'error': 'No se seleccionaron archivos'}), 400
@@ -53,11 +53,6 @@ def upload_files():
     if len(files) < 1:
         return jsonify({'error': 'Debes subir al menos 1 archivo válido'}), 400
 
-    # Obtener parámetros
-    modo = request.form.get('modo', 'pares')
-    custom_name = request.form.get('custom_name', '').strip()
-
-    # Validación específica por modo
     if modo == 'pares':
         is_valid, message = validate_file_pairs(files)
         if not is_valid:
@@ -74,7 +69,6 @@ def upload_files():
         combined_pdfs = []
         
         if modo == 'pares':
-            # Procesamiento por pares (PDFs mantienen sus nombres)
             file_groups = {}
             for file_path in saved_files:
                 base_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -84,49 +78,60 @@ def upload_files():
 
             for base_name, file_group in file_groups.items():
                 try:
-                    output_name = f"{base_name}.pdf"  # Mantener nombre original
+                    output_path = os.path.join(output_dir, f"{base_name}.pdf")
                     combined_pdf = processor.combinar_archivos(
                         file_group,
-                        output_dir=output_dir,
-                        output_name=output_name,
+                        output_path=output_path,  # Cambiado de output_dir/output_name a output_path
                         modo="pares"
                     )
                     if combined_pdf and os.path.exists(combined_pdf):
-                        processed_pdf = optimize_pdf_size(combined_pdf, output_dir=output_dir)
+                        processed_pdf = optimize_pdf_size(
+                            combined_pdf, 
+                            output_dir=output_dir,
+                            grayscale=grayscale
+                        )
                         if processed_pdf:
                             combined_pdfs.append(processed_pdf)
                 except Exception as e:
                     app.logger.error(f"Error procesando grupo {base_name}: {str(e)}")
                     continue
 
-            # Nombre del ZIP
             zip_output_name = custom_name if custom_name else "documentos_combinados_por_pares"
 
-        else:  # Modo completo
-            # Procesar todo en un solo PDF
+        else:
             output_name = f"{custom_name}.pdf" if custom_name else "documento_completo.pdf"
-            combined_pdf = processor.combinar_archivos(
-                saved_files,
-                output_dir=output_dir,
-                output_name=output_name,
-                modo="completo"
-            )
-            if combined_pdf and os.path.exists(combined_pdf):
-                processed_pdf = optimize_pdf_size(combined_pdf, output_dir=output_dir)
-                if processed_pdf:
-                    combined_pdfs.append(processed_pdf)
+            output_path = os.path.join(output_dir, output_name)
+            
+            try:
+                combined_pdf = processor.combinar_archivos(
+                    saved_files,
+                    output_path=output_path,  # Cambiado de output_dir/output_name a output_path
+                    modo="completo"
+                )
+                if combined_pdf and os.path.exists(combined_pdf):
+                    processed_pdf = optimize_pdf_size(
+                        combined_pdf,
+                        output_dir=output_dir,
+                        grayscale=grayscale
+                    )
+                    if processed_pdf:
+                        combined_pdfs.append(processed_pdf)
+                else:
+                    raise Exception("No se pudo crear el PDF combinado")
+                    
+            except Exception as e:
+                app.logger.error(f"Error combinando archivos: {str(e)}")
+                return jsonify({'error': f'Error al combinar archivos: {str(e)}'}), 500
 
-            # Nombre del ZIP (mismo que el PDF pero sin extensión)
             zip_output_name = custom_name if custom_name else "documento_completo"
 
         if not combined_pdfs:
             return jsonify({'error': 'No se pudieron procesar los archivos'}), 500
 
-        # Crear ZIP con el nombre adecuado
         zip_filename = f"{zip_output_name}.zip"
         zip_path = os.path.join(temp_dir, zip_filename)
 
-        with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
+        with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=1) as zipf:
             for pdf in combined_pdfs:
                 if pdf and os.path.exists(pdf):
                     arcname = os.path.basename(pdf)
@@ -139,7 +144,8 @@ def upload_files():
             'success': True,
             'filename': os.path.basename(zip_path),
             'modo': modo,
-            'custom_name_used': bool(custom_name)
+            'custom_name_used': bool(custom_name),
+            'color_mode': color_mode
         })
 
     except Exception as e:
@@ -166,140 +172,120 @@ def download_file():
         app.logger.error(f"Error al descargar archivo: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-def optimize_pdf_size(input_pdf, output_dir=None, target_dpi=300):
-    """Optimiza el tamaño del PDF manteniendo escala de grises"""
+
+def optimize_pdf_size(input_pdf, output_dir=None, target_dpi=150, grayscale=False):
+    """Optimiza un PDF manteniendo texto vectorial y mejorando la legibilidad."""
     try:
         if not os.path.exists(input_pdf):
-            app.logger.error(f"Archivo no encontrado: {input_pdf}")
+            print(f"Archivo no encontrado: {input_pdf}")
             return None
         
         output_dir = output_dir or os.path.dirname(input_pdf)
         os.makedirs(output_dir, exist_ok=True)
         
-        base_name = os.path.splitext(os.path.basename(input_pdf))[0]
-        output_pdf = os.path.join(output_dir, f"{base_name}_optimized.pdf")
+        output_pdf = os.path.join(output_dir, f"opt_{os.path.basename(input_pdf)}")
         
-        doc = fitz.open(input_pdf)
-        new_doc = fitz.open()
+        # Abrimos el documento original y creamos uno nuevo
+        src_doc = fitz.open(input_pdf)
+        dst_doc = fitz.open()
         
-        # Fuentes seguras disponibles en PyMuPDF
-        safe_fonts = {
-            'helv': 'Helvetica',
-            'cour': 'Courier',
-            'tiro': 'Times-Roman'
-        }
-        
-        for page in doc:
-            new_page = new_doc.new_page(width=page.rect.width, height=page.rect.height)
-            
-            # Fondo blanco en escala de grises
-            new_page.draw_rect(new_page.rect, color=(0, 0, 0), fill=(1, 1, 1))
-            
-            # Procesar imágenes
-            for img in page.get_images(full=True):
-                try:
-                    xref = img[0]
-                    base_image = doc.extract_image(xref)
-                    if not base_image or "image" not in base_image:
-                        continue
-                        
-                    img_pil = Image.open(io.BytesIO(base_image["image"]))
-                    img_pil = img_pil.convert("L")  # Escala de grises
-                    
-                    if max(img_pil.size) > 1200:
-                        img_pil.thumbnail((1200, 1200))
-                    
-                    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_img:
-                        temp_path = temp_img.name
-                        img_pil.save(temp_path, "JPEG", quality=20, optimize=True)
-                        
-                        img_rects = page.get_image_rects(xref)
-                        if img_rects:
-                            new_page.insert_image(img_rects[0], filename=temp_path)
-                        
-                    os.unlink(temp_path)
-                except Exception as e:
-                    app.logger.warning(f"Error procesando imagen: {str(e)}")
-                    continue
-            
-            # Procesar texto con manejo seguro de fuentes
-            text_blocks = page.get_text("dict").get("blocks", [])
-            for block in text_blocks:
-                if "lines" in block:
-                    for line in block["lines"]:
-                        for span in line["spans"]:
-                            try:
-                                bbox = fitz.Rect(span["bbox"])
-                                new_page.draw_rect(bbox, color=(0, 0, 0), fill=(1, 1, 1))
-                                
-                                # Manejo seguro de fuentes
-                                font_name = span.get("font", "helv").lower()
-                                safe_font = safe_fonts.get(font_name, 'Helvetica')
-                                
-                                new_page.insert_text(
-                                    span["origin"],
-                                    span["text"],
-                                    fontname=safe_font,
-                                    fontsize=max(span.get("size", 8), 6),
-                                    color=(0, 0, 0),
-                                    overlay=True
-                                )
-                            except Exception as e:
-                                app.logger.warning(f"Error insertando texto: {str(e)}")
-                                continue
-            
-            # Procesar XML con fondo diferenciado
-            xml_blocks = [b for b in text_blocks if any(tag in b.get("text", "") 
-                          for tag in ["<?xml", "<cfdi:", "<tfd:", "<xs:", "<!["])]
-            
-            for block in xml_blocks:
-                if "lines" in block:
-                    for line in block["lines"]:
-                        for span in line["spans"]:
-                            try:
-                                bbox = fitz.Rect(span["bbox"])
-                                new_page.draw_rect(bbox, color=(0, 0, 0), fill=(0.95, 0.95, 0.95))
-                                new_page.insert_text(
-                                    span["origin"],
-                                    span["text"],
-                                    fontname='Courier',
-                                    fontsize=max(span.get("size", 8), 7),
-                                    color=(0, 0, 0),
-                                    overlay=True
-                                )
-                            except:
-                                continue
-            
-            # Renderizar gráficos en escala de grises
-            try:
-                pix = page.get_pixmap(
-                    matrix=fitz.Matrix(target_dpi/72, target_dpi/72),
-                    colorspace=fitz.csGRAY,
-                    alpha=False
-                )
-                new_page.insert_image(new_page.rect, pixmap=pix, overlay=True)
-            except Exception as e:
-                app.logger.error(f"Error renderizando gráficos: {str(e)}")
+        for page in src_doc:
+            new_page = dst_doc.new_page(width=page.rect.width, height=page.rect.height)
 
+            if grayscale:
+                # Extraer texto y bloques
+                text_blocks = page.get_text("blocks")
+                images = page.get_images(full=True)
+
+                # Convertir la página completa a escala de grises (sin texto)
+                pix = page.get_pixmap(dpi=max(target_dpi, 150), colorspace=fitz.csGRAY, alpha=False)
+                new_page.insert_image(new_page.rect, pixmap=pix)
+
+                # Reinsertar texto en negro sólido para mayor claridad
+                tw = fitz.TextWriter(new_page.rect)
+                for block in text_blocks:
+                    if block[6]:  # Si el bloque contiene texto
+                        x0, y0, _, _, text, *_ = block
+                        tw.append((x0, y0), text)
+                tw.write_text(new_page, color=(0, 0, 0))  # Texto en negro puro
+                
+                # Procesar imágenes individualmente con mejora de contraste y compresión
+                for img in images:
+                    xref = img[0]
+
+                    try:
+                        # Extraer imagen del PDF
+                        base_image = src_doc.extract_image(xref)
+                        if not base_image or "image" not in base_image:
+                            print(f"Advertencia: Imagen en xref {xref} es nula o no extraíble, saltando...")
+                            continue
+
+                        # Añade esta validación adicional:
+                        if not base_image.get("width", 0) or not base_image.get("height", 0):
+                            print(f"Imagen en xref {xref} tiene dimensiones inválidas, saltando...")
+                            continue
+
+                        # Validar tamaño y formato de la imagen extraída
+                        img_bytes = base_image["image"]
+                        if len(img_bytes) < 100:  # Tamaño mínimo de imagen razonable
+                            print(f"Imagen en xref {xref} es demasiado pequeña, ignorando...")
+                            continue
+
+                        img_pil = Image.open(io.BytesIO(img_bytes))
+
+                        # Verificar si la imagen es un formato soportado
+                        if img_pil.format not in ["JPEG", "PNG", "TIFF"]:
+                            print(f"Formato de imagen en xref {xref} no soportado ({img_pil.format}), ignorando...")
+                            continue
+
+                        if img_pil.mode != "L":
+                            img_pil = img_pil.convert("L")
+                        
+                        # Mejorar contraste para mayor legibilidad
+                        enhancer = ImageEnhance.Contrast(img_pil)
+                        img_pil = enhancer.enhance(1.5)
+
+                        # Convertir a JPEG con compresión optimizada
+                        img_bytes = io.BytesIO()
+                        img_pil.save(img_bytes, format="JPEG", quality=85, optimize=True)
+                        img_bytes.seek(0)
+
+                        # Guardar en archivo temporal con un nombre único
+                        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                            tmp.write(img_bytes.read())
+                            img_rect = page.get_image_bbox(xref)
+                            new_page.insert_image(img_rect, filename=tmp.name)
+
+                        os.unlink(tmp.name)  # Eliminar archivo temporal después de usarlo
+                    except Exception as e:
+                        print(f"Error procesando imagen en xref {xref}: {str(e)}")
+            else:
+                # Si no es escala de grises, copiar la página original
+                new_page.show_pdf_page(new_page.rect, src_doc, page.number)
+        
+        # Opciones de guardado optimizadas
         save_options = {
             "garbage": 4,
             "deflate": True,
-            "deflate_images": True,
-            "deflate_fonts": True,
             "clean": True
         }
         
-        new_doc.save(output_pdf, **save_options)
-        new_doc.close()
-        doc.close()
+        dst_doc.save(output_pdf, **save_options)
         
-        app.logger.info(f"PDF optimizado guardado en: {output_pdf}")
+        # Cerrar documentos correctamente
+        src_doc.close()
+        dst_doc.close()
+        
+        print(f"PDF optimizado guardado en: {output_pdf}")
         return output_pdf
-        
-    except Exception as e:
-        app.logger.error(f"Error al optimizar PDF: {str(e)}")
-        return None
 
-if __name__ == '__main__':
-   port = int(os.environ.get('PORT', 10000))
-   app.run(host='0.0.0.0', port=port)
+    except Exception as e:
+        print(f"Error al optimizar PDF: {str(e)}")
+    finally:
+        # Asegurar que los documentos se cierran en caso de error
+        if 'src_doc' in locals() and not src_doc.is_closed:
+            src_doc.close()
+        if 'dst_doc' in locals() and not dst_doc.is_closed:
+            dst_doc.close()
+    
+    return None
