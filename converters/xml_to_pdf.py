@@ -1,92 +1,98 @@
 import os
-import xml.dom.minidom
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import mm
-from reportlab.lib.colors import blue, green, purple, black
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
+from fpdf import FPDF
 
 class XMLtoPDFConverter:
     def __init__(self):
-        self.PAGE_WIDTH, self.PAGE_HEIGHT = 215.9 * mm, 279.4 * mm
-        self.MARGIN_LEFT, self.MARGIN_TOP = 15 * mm, 15 * mm
-        self.FONT_SIZE, self.LINE_HEIGHT, self.TAB_SIZE = 6, 8, 6
-        self.MAX_LINE_LENGTH = 150
-        self.TITLE_FONT_SIZE = 14
+        # Configuración de PDF
+        self.margen = 10
+        self.ancho_util = 210 - 2 * self.margen  # A4 (210mm) - márgenes
+        self.espaciado_lineas = 3
+        self.fuente_cuerpo = "Courier"
+        self.tam_fuente_cuerpo = 6
+        self.fuente_titulo = "Arial"
+        self.tam_fuente_titulo = 14
 
     def format_xml_text(self, xml_text):
+        """Formatea el XML con indentación (pretty print)"""
         try:
-            dom = xml.dom.minidom.parseString(xml_text)
-            return [line for line in dom.toprettyxml(indent="  ").split("\n") if line.strip()]
+            dom = minidom.parseString(xml_text)
+            return [line.strip() for line in dom.toprettyxml(indent='  ').split("\n") if line.strip()]
         except Exception as e:
             print(f"Error al formatear XML: {str(e)}")
             return []
 
-    def draw_colored_text(self, c, text, x, y):
-        current_x = x
-        for word in text.split():
-            word = word.strip()
-            if word.startswith("<") and word.endswith(">"):
-                c.setFillColor(blue)
-            elif "=" in word:
-                c.setFillColor(green)
-            elif word.startswith('"') and word.endswith('"'):
-                c.setFillColor(green)
-            else:
-                c.setFillColor(purple)
-            c.drawString(current_x, y, word)
-            current_x += c.stringWidth(word, "Courier", self.FONT_SIZE) + 3
-        c.setFillColor(black)
+    def convertir_xml_a_txt(self, ruta_xml, ruta_txt):
+        """Convierte XML a TXT con formato legible"""
+        try:
+            # Leer el contenido del XML
+            with open(ruta_xml, 'r', encoding='utf-8') as archivo_xml:
+                xml_content = archivo_xml.read()
+            
+            # Formatear el XML para que sea legible
+            formatted_lines = self.format_xml_text(xml_content)
+            
+            # Escribir las líneas formateadas en el TXT
+            with open(ruta_txt, 'w', encoding='utf-8') as archivo_txt:
+                archivo_txt.write("\n".join(formatted_lines))
+            
+            print(f"XML convertido a TXT legible: {ruta_txt}")
+            return True
+        except Exception as e:
+            print(f"Error al convertir XML a TXT: {str(e)}")
+            return False
+
+    def convertir_txt_a_pdf(self, ruta_txt, ruta_pdf, nombre_xml=None):
+        """Convierte TXT a PDF con formato mejorado"""
+        try:
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_margins(left=self.margen, top=self.margen, right=self.margen)
+
+            # Añadir título con nombre del XML
+            nombre_mostrar = nombre_xml if nombre_xml else os.path.splitext(os.path.basename(ruta_txt))[0]
+            pdf.set_font(self.fuente_titulo, "B", self.tam_fuente_titulo)
+            pdf.cell(0, 10, txt=f"Archivo: {nombre_mostrar}", ln=True, align="C")
+            pdf.ln(6)  # Espacio después del título
+
+            # Configurar cuerpo
+            pdf.set_font(self.fuente_cuerpo, size=self.tam_fuente_cuerpo)
+
+            with open(ruta_txt, "r", encoding="utf-8") as txt_file:
+                for linea in txt_file:
+                    linea = linea.strip()
+                    if linea:
+                        pdf.multi_cell(
+                            w=self.ancho_util,
+                            h=self.espaciado_lineas,
+                            txt=linea,
+                            border=0,
+                            align="L",
+                        )
+                        pdf.ln(2)
+
+            pdf.output(ruta_pdf)
+            print(f"PDF generado en: {ruta_pdf}")
+            return True
+        except Exception as e:
+            print(f"Error al convertir TXT a PDF: {str(e)}")
+            return False
 
     def convert(self, xml_path, output_pdf):
-        if not os.path.exists(xml_path):
-            print(f"Error: Archivo XML no encontrado en {xml_path}")
+        """Método unificado para compatibilidad con pdf_processor.py"""
+        temp_txt = os.path.join(os.path.dirname(output_pdf), "temp_xml.txt")
+        
+        if not self.convertir_xml_a_txt(xml_path, temp_txt):
             return False
-        
-        with open(xml_path, "r", encoding="utf-8") as file:
-            formatted_lines = self.format_xml_text(file.read())
-
-        if not formatted_lines:
-            print("Error: No se pudo formatear el XML")
+            
+        # Obtener nombre del XML sin extensión
+        nombre_xml = os.path.splitext(os.path.basename(xml_path))[0]
+            
+        if not self.convertir_txt_a_pdf(temp_txt, output_pdf, nombre_xml=nombre_xml):
             return False
-
-        c = canvas.Canvas(output_pdf, 
-                     pagesize=(self.PAGE_WIDTH, self.PAGE_HEIGHT),
-                     pageCompression=1)
-        
-        # 1. Agregar título centrado en negritas
-        file_name = os.path.splitext(os.path.basename(xml_path))[0]
-        c.setFont("Helvetica-Bold", self.TITLE_FONT_SIZE)
-        title_width = c.stringWidth(file_name, "Helvetica-Bold", self.TITLE_FONT_SIZE)
-        title_x = (self.PAGE_WIDTH - title_width) / 2
-        title_y = self.PAGE_HEIGHT - self.MARGIN_TOP - 10
-        
-        c.drawString(title_x, title_y, file_name)
-        
-        # 2. Dibujar línea separadora
-        c.line(self.MARGIN_LEFT, title_y - 5, 
-              self.PAGE_WIDTH - self.MARGIN_LEFT, title_y - 5)
-        
-        # 3. Configurar para el contenido XML
-        c.setFont("Courier", self.FONT_SIZE)
-        x, y = self.MARGIN_LEFT, title_y - 15
-
-        for line in formatted_lines:
-            indent = line.count("  ") * self.TAB_SIZE
-            adjusted_x = x + indent
-            while len(line) > self.MAX_LINE_LENGTH:
-                self.draw_colored_text(c, line[:self.MAX_LINE_LENGTH], x, y)
-                line = line[self.MAX_LINE_LENGTH:]
-                y -= self.LINE_HEIGHT
-                if y < self.MARGIN_LEFT:
-                    c.showPage()
-                    c.setFont("Courier", self.FONT_SIZE)
-                    y = self.PAGE_HEIGHT - self.MARGIN_LEFT
-            if y < self.MARGIN_TOP:
-                c.showPage()
-                c.setFont("Courier", self.FONT_SIZE)
-                y = self.PAGE_HEIGHT - self.MARGIN_TOP
-            self.draw_colored_text(c, line.strip(), adjusted_x, y)
-            y -= self.LINE_HEIGHT
-
-        c.save()
-        print(f"PDF generado en: {os.path.abspath(output_pdf)}")
+            
+        # Limpieza
+        if os.path.exists(temp_txt):
+            os.remove(temp_txt)
         return True
