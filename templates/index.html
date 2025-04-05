@@ -10,7 +10,6 @@
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='logo.png') }}">
 
-    
     <style>
         :root {
             --primary-color: #254d68;
@@ -220,6 +219,17 @@
             border-color: var(--primary-color);
             box-shadow: 0 0 0 0.25rem rgba(37, 77, 104, 0.25);
         }
+
+        .sortable-handle {
+            cursor: move;
+            margin-right: 10px;
+            color: var(--primary-color);
+        }
+
+        .sortable-ghost {
+            opacity: 0.5;
+            background: #c8ebfb;
+        }
     </style>
 </head>
 <body>
@@ -253,7 +263,13 @@
                             <small class="text-muted d-block mt-1">Todos los archivos en un único documento</small>
                         </label>
                     </div>
-                    
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="modo" id="modoSoloPDF" value="solopdf">
+                        <label class="form-check-label" for="modoSoloPDF">
+                            <i class="bi bi-file-pdf"></i> Combinar solo PDF
+                            <small class="text-muted d-block mt-1">Solo archivos PDF, orden personalizable</small>
+                        </label>
+                    </div>
                 </div>
 
                 <div class="mode-selector mb-4">
@@ -271,8 +287,6 @@
                         </label>
                     </div>
                 </div>
-
-                
 
                 <form id="uploadForm" enctype="multipart/form-data">
                     <div class="d-grid mt-4">
@@ -297,8 +311,6 @@
                         <h5>Archivos seleccionados <span id="fileCount" class="file-counter">0</span></h5>
                         <div class="file-list" id="fileList"></div>
                     </div>
-                    
-                    
                 </form>
             </div>
         </div>
@@ -306,6 +318,8 @@
 
     <!-- Bootstrap Icons -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <!-- SortableJS -->
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.14.0/Sortable.min.js"></script>
 
     <script>
         $(document).ready(function() {
@@ -319,28 +333,109 @@
             const submitText = $('#submitText');
             const submitSpinner = $('#submitSpinner');
             
-            let customFileName = '';
-            const modal = new bootstrap.Modal(document.getElementById('nombreArchivoModal'));
-
-            // Variables de estado
             let files = [];
             let validPairs = 0;
             let currentMode = 'pares';
             
-            // Manejar cambio de modo
-            $('input[name="modo"]').change(function() {
-                currentMode = $(this).val();
-                updateUI();
-                
-                // Mostrar feedback visual
-                if (currentMode === 'completo') {
-                    fileStatus.html('<i class="bi bi-info-circle"></i> Modo: Todos los archivos en un PDF');
-                } else {
-                    fileStatus.html('<i class="bi bi-info-circle"></i> Modo: Unir por pares (PDF+XML)');
+            let sortable = null;
+
+            function applyFileOrder() {
+                if (currentMode === 'pares') {
+                    sortFilesByName(); // Ordenamiento para pares
+                } else if (currentMode === 'completo') {
+                    // Cambiamos esta lógica para mantener el orden de pares
+                    sortFilesByName(); // Ahora usamos el mismo ordenamiento que para pares
                 }
-            });
-            
-            // Actualizar la interfaz basada en los archivos seleccionados
+            }
+
+            function sortFilesByName() {
+                const filesMap = new Map();
+                
+                files.forEach(file => {
+                    const baseName = file.name.replace(/\.[^.]+$/, '');
+                    if (!filesMap.has(baseName)) {
+                        filesMap.set(baseName, { pdf: null, xml: null });
+                    }
+                    const ext = file.name.split('.').pop().toLowerCase();
+                    filesMap.get(baseName)[ext] = file;
+                });
+                
+                files = [];
+                Array.from(filesMap.keys()).sort().forEach(baseName => {
+                    const pair = filesMap.get(baseName);
+                    if (pair.pdf) files.push(pair.pdf);
+                    if (pair.xml) files.push(pair.xml);
+                });
+            }
+
+            function displayFiles() {
+                fileList.empty();
+                
+                files.forEach((file, index) => {
+                    const isPDF = file.name.toLowerCase().endsWith('.pdf');
+                    const fileItem = $(`
+                        <div class="file-item" data-index="${index}">
+                            <div class="file-info">
+                                ${currentMode === 'solopdf' ? '<i class="bi bi-grip-vertical sortable-handle"></i>' : ''}
+                                <i class="bi ${isPDF ? 'bi-file-earmark-pdf pdf-icon' : 'bi-file-earmark-code xml-icon'} file-icon"></i>
+                                <div>
+                                    <div class="file-name">${file.name}</div>
+                                    <small class="text-muted">${(file.size / 1024).toFixed(2)} KB</small>
+                                </div>
+                            </div>
+                            <div class="file-actions">
+                                <button type="button" class="btn-remove" data-index="${index}">
+                                    <i class="bi bi-trash-fill"></i>
+                                </button>
+                            </div>
+                        </div>
+                    `);
+                    
+                    fileList.append(fileItem);
+                });
+
+                $('.btn-remove').click(function() {
+                    const index = $(this).data('index');
+                    files.splice(index, 1);
+                    updateFileInput();
+                    displayFiles();
+                    updateUI();
+                });
+
+                if (currentMode === 'solopdf' && files.length > 0) {
+                    initSortable();
+                }
+            }
+
+            function initSortable() {
+                if (sortable) sortable.destroy();
+                
+                sortable = new Sortable(fileList[0], {
+                    animation: 150,
+                    ghostClass: 'sortable-ghost',
+                    handle: '.sortable-handle',
+                    onEnd: function() {
+                        const items = fileList.find('.file-item');
+                        const newFiles = [];
+                        
+                        items.each(function() {
+                            const index = $(this).data('index');
+                            newFiles.push(files[index]);
+                        });
+                        
+                        files = newFiles;
+                        updateFileInput();
+                        validatePDFOnly();
+                    }
+                });
+            }
+
+            function updateFileInput() {
+                const dataTransfer = new DataTransfer();
+                files.forEach(file => dataTransfer.items.add(file));
+                fileInput[0].files = dataTransfer.files;
+            }
+
             function updateUI() {
                 if (files.length > 0) {
                     fileSelectionInfo.show();
@@ -348,6 +443,8 @@
                     
                     if (currentMode === 'pares') {
                         validateFilePairs();
+                    } else if (currentMode === 'solopdf') {
+                        validatePDFOnly();
                     } else {
                         validateAllFiles();
                     }
@@ -358,13 +455,11 @@
                     fileStatus.html('<i class="bi bi-exclamation-circle-fill"></i> Sube archivos para continuar');
                 }
             }
-            
-            // Validar pares de archivos (modo pares)
+
             function validateFilePairs() {
                 const fileGroups = {};
                 validPairs = 0;
                 
-                // Agrupar por nombre base
                 files.forEach(file => {
                     const baseName = file.name.replace(/\.[^/.]+$/, "");
                     if (!fileGroups[baseName]) {
@@ -373,7 +468,6 @@
                     fileGroups[baseName].push(file);
                 });
                 
-                // Contar pares válidos
                 Object.values(fileGroups).forEach(group => {
                     const hasPDF = group.some(f => f.name.toLowerCase().endsWith('.pdf'));
                     const hasXML = group.some(f => f.name.toLowerCase().endsWith('.xml'));
@@ -383,7 +477,6 @@
                     }
                 });
                 
-                // Actualizar estado del botón y mensajes
                 if (validPairs > 0) {
                     submitBtn.prop('disabled', false);
                     fileStatus.removeClass('error-message').addClass('success-message');
@@ -399,7 +492,25 @@
                 }
             }
             
-            // Validar archivos (modo completo)
+            function validatePDFOnly() {
+                const hasPDF = files.some(f => f.name.toLowerCase().endsWith('.pdf'));
+                const hasXML = files.some(f => f.name.toLowerCase().endsWith('.xml'));
+                
+                if (hasPDF && !hasXML) {
+                    submitBtn.prop('disabled', false);
+                    fileStatus.removeClass('error-message').addClass('success-message');
+                    fileStatus.html(`<i class="bi bi-check-circle-fill"></i> ${files.length} PDF(s) listos para combinar`);
+                } else if (hasXML) {
+                    submitBtn.prop('disabled', true);
+                    fileStatus.removeClass('success-message').addClass('error-message');
+                    fileStatus.html(`<i class="bi bi-exclamation-circle-fill"></i> Este modo solo acepta archivos PDF`);
+                } else {
+                    submitBtn.prop('disabled', true);
+                    fileStatus.removeClass('success-message').addClass('error-message');
+                    fileStatus.html(`<i class="bi bi-exclamation-circle-fill"></i> Sube al menos un archivo PDF`);
+                }
+            }
+            
             function validateAllFiles() {
                 const hasPDF = files.some(f => f.name.toLowerCase().endsWith('.pdf'));
                 const hasXML = files.some(f => f.name.toLowerCase().endsWith('.xml'));
@@ -414,60 +525,15 @@
                     fileStatus.html(`<i class="bi bi-exclamation-circle-fill"></i> Sube al menos un archivo PDF o XML`);
                 }
             }
-            
-            // Mostrar archivos en la lista
-            function displayFiles() {
-                fileList.empty();
-                
-                files.forEach((file, index) => {
-                    const isPDF = file.name.toLowerCase().endsWith('.pdf');
-                    const isXML = file.name.toLowerCase().endsWith('.xml');
-                    
-                    const fileItem = $(`
-                        <div class="file-item">
-                            <div class="file-info">
-                                <i class="bi ${isPDF ? 'bi-file-earmark-pdf pdf-icon' : 'bi-file-earmark-code xml-icon'} file-icon"></i>
-                                <div>
-                                    <div>${file.name}</div>
-                                    <small class="text-muted">${(file.size / 1024).toFixed(2)} KB</small>
-                                </div>
-                            </div>
-                            <div class="file-actions">
-                                <button type="button" class="btn-remove" data-index="${index}">
-                                    <i class="bi bi-trash-fill"></i>
-                                </button>
-                            </div>
-                        </div>
-                    `);
-                    
-                    fileList.append(fileItem);
-                });
-                
-                // Agregar evento para eliminar archivos
-                $('.btn-remove').click(function() {
-                    const index = $(this).data('index');
-                    files.splice(index, 1);
-                    updateFileInput();
-                    displayFiles();
-                    updateUI();
-                });
-            }
-            
-            // Actualizar el input de archivos
-            function updateFileInput() {
-                const dataTransfer = new DataTransfer();
-                files.forEach(file => dataTransfer.items.add(file));
-                fileInput[0].files = dataTransfer.files;
-            }
-            
-            // Manejar selección de archivos
+
             fileInput.on('change', function() {
                 files = Array.from(this.files);
+                applyFileOrder();
+                updateFileInput();
                 displayFiles();
                 updateUI();
             });
-            
-            // Manejar drag and drop
+
             dropZone.on('dragover', function(e) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -489,190 +555,196 @@
                     files = Array.from(e.originalEvent.dataTransfer.files)
                         .filter(file => file.name.toLowerCase().endsWith('.pdf') || file.name.toLowerCase().endsWith('.xml'));
                     
+                    applyFileOrder();
                     updateFileInput();
                     displayFiles();
                     updateUI();
                 }
             });
-            
-            // Manejar envío del formulario
-            // Manejar envío del formulario
-        // Manejar envío del formulario
-$('#uploadForm').on('submit', function(e) {
-    e.preventDefault();
-    const formData = new FormData();
-    
-    // Validación según el modo
-    if (currentMode === 'pares') {
-        if (files.length < 2 || validPairs === 0) {
-            Swal.fire({
-                icon: 'error',
-                title: 'Error',
-                text: 'Debes subir al menos un par válido de archivos (PDF + XML)',
-                confirmButtonColor: 'var(--primary-color)'
-            });
-            return;
-        }
-    } else {
-        if (files.length === 0) {
-            Swal.fire({
-                icon: 'error',
-                title: 'Error',
-                text: 'Debes subir al menos un archivo',
-                confirmButtonColor: 'var(--primary-color)'
-            });
-            return;
-        }
-    }
 
-    // Mostrar diálogo para nombre de archivo
-    Swal.fire({
-        title: 'Nombre del archivo resultante',
-        input: 'text',
-        inputLabel: 'Nombre personalizado (sin extensión)',
-        inputPlaceholder: currentMode === 'pares' ? 'Ej: mis_documentos' : 'Ej: documento_completo',
-        showCancelButton: true,
-        confirmButtonText: 'Procesar',
-        cancelButtonText: 'Cancelar',
-        confirmButtonColor: 'var(--primary-color)',
-        inputValidator: (value) => {
-            if (value && /[\\/:*?"<>|]/.test(value)) {
-                return 'El nombre contiene caracteres no permitidos';
-            }
-        }
-    }).then((result) => {
-
-            if (result.isDismissed) {
-                // El usuario hizo clic en Cancelar
-                submitBtn.prop('disabled', false);
-                submitText.text('Procesar Archivos');
-                submitSpinner.hide();
-                return;
-            }
-            // Crear FormData correctamente
-            const formData = new FormData();
-            
-            // Agregar archivos
-            $.each(files, function(i, file) {
-                formData.append('files', file);
-            });
-            
-            // Agregar otros datos
-            formData.append('modo', currentMode);
-            formData.append('color_mode', $('input[name="color_mode"]:checked').val());
-            if (result.isConfirmed && result.value) {
-                formData.append('custom_name', result.value.trim());
-            }
-
-            // Mostrar estado de carga
-            submitBtn.prop('disabled', true);
-            submitText.text('Procesando...');
-            submitSpinner.show();
-            
-            Swal.fire({
-                title: 'Procesando archivos',
-                html: 'Estamos convirtiendo tus documentos, por favor espera...',
-                allowOutsideClick: false,
-                didOpen: () => {
-                    Swal.showLoading();
+            $('input[name="modo"]').change(function() {
+                currentMode = $(this).val();
+                
+                if (currentMode === 'solopdf') {
+                    files = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+                }
+                
+                applyFileOrder();
+                updateFileInput();
+                displayFiles();
+                updateUI();
+                
+                // Actualizar mensaje de estado
+                if (currentMode === 'completo') {
+                    fileStatus.html('<i class="bi bi-info-circle"></i> Modo: Todos los archivos en un PDF (ordenados por pares)');
+                } else if (currentMode === 'solopdf') {
+                    fileStatus.html('<i class="bi bi-info-circle"></i> Modo: Combinar solo PDFs (orden personalizable)');
+                } else {
+                    fileStatus.html('<i class="bi bi-info-circle"></i> Modo: Unir por pares (PDF+XML)');
                 }
             });
-            
-            // Enviar al servidor
-            $.ajax({
-                url: '/upload',
-                type: 'POST',
-                data: formData,
-                processData: false,
-                contentType: false,
-                success: function(response) {
-                    Swal.close();
-                    
-                    if (response.error) {
+
+            $('#uploadForm').on('submit', function(e) {
+                e.preventDefault();
+                
+                if (currentMode === 'pares') {
+                    if (files.length < 2 || validPairs === 0) {
                         Swal.fire({
                             icon: 'error',
                             title: 'Error',
-                            text: response.error,
+                            text: 'Debes subir al menos un par válido de archivos (PDF + XML)',
                             confirmButtonColor: 'var(--primary-color)'
                         });
                         return;
                     }
-                    
-                    // Descargar el archivo
-                    const link = document.createElement('a');
-                    link.href = `/download?filename=${encodeURIComponent(response.filename)}`;
-                    link.download = response.filename;  // Esto fuerza el nombre de descarga
-                    document.body.appendChild(link);
-                    link.click();
-                    document.body.removeChild(link);
-                    
-                    // Resetear formulario
-                    files = [];
-                    fileInput.val('');
-                    fileList.empty();
-                    updateUI();
-                    
-                    // Mostrar confirmación
-                    setTimeout(() => {
+                } else if (currentMode === 'solopdf') {
+                    const hasNonPDF = files.some(f => !f.name.toLowerCase().endsWith('.pdf'));
+                    if (hasNonPDF) {
                         Swal.fire({
-                            icon: 'success',
-                            title: '¡Conversión exitosa!',
-                            text: 'Tus archivos se han procesado correctamente',
+                            icon: 'error',
+                            title: 'Error',
+                            text: 'En este modo solo puedes subir archivos PDF',
                             confirmButtonColor: 'var(--primary-color)'
                         });
-                    }, 1000);
-                },
-                error: function(xhr) {
-                    Swal.close();
-                    let errorMsg = 'Ocurrió un error al procesar los archivos';
-                    
-                    try {
-                        const response = JSON.parse(xhr.responseText);
-                        if (response.error) {
-                            errorMsg = response.error;
-                        }
-                    } catch (e) {
-                        console.error('Error:', e);
+                        return;
                     }
+                    if (files.length < 1) {
+                        Swal.fire({
+                            icon: 'error',
+                            title: 'Error',
+                            text: 'Debes subir al menos un archivo PDF',
+                            confirmButtonColor: 'var(--primary-color)'
+                        });
+                        return;
+                    }
+                } else {
+                    if (files.length === 0) {
+                        Swal.fire({
+                            icon: 'error',
+                            title: 'Error',
+                            text: 'Debes subir al menos un archivo',
+                            confirmButtonColor: 'var(--primary-color)'
+                        });
+                        return;
+                    }
+                }
+
+                Swal.fire({
+                    title: 'Nombre del archivo resultante',
+                    input: 'text',
+                    inputLabel: 'Nombre personalizado (sin extensión)',
+                    inputPlaceholder: currentMode === 'pares' ? 'Ej: mis_documentos' : 'Ej: documento_completo',
+                    showCancelButton: true,
+                    confirmButtonText: 'Procesar',
+                    cancelButtonText: 'Cancelar',
+                    confirmButtonColor: 'var(--primary-color)',
+                    inputValidator: (value) => {
+                        if (value && /[\\/:*?"<>|]/.test(value)) {
+                            return 'El nombre contiene caracteres no permitidos';
+                        }
+                    }
+                }).then((result) => {
+                    if (result.isDismissed) {
+                        submitBtn.prop('disabled', false);
+                        submitText.text('Procesar Archivos');
+                        submitSpinner.hide();
+                        return;
+                    }
+
+                    const formData = new FormData();
+                    
+                    $.each(files, function(i, file) {
+                        formData.append('files', file);
+                    });
+                    
+                    formData.append('modo', currentMode);
+                    formData.append('color_mode', $('input[name="color_mode"]:checked').val());
+                    if (result.isConfirmed && result.value) {
+                        formData.append('custom_name', result.value.trim());
+                    }
+
+                    submitBtn.prop('disabled', true);
+                    submitText.text('Procesando...');
+                    submitSpinner.show();
                     
                     Swal.fire({
-                        icon: 'error',
-                        title: 'Error',
-                        text: errorMsg,
-                        confirmButtonColor: 'var(--primary-color)'
+                        title: 'Procesando archivos',
+                        html: 'Estamos convirtiendo tus documentos, por favor espera...',
+                        allowOutsideClick: false,
+                        didOpen: () => {
+                            Swal.showLoading();
+                        }
                     });
-                },
-                complete: function() {
-                    submitBtn.prop('disabled', false);
-                    submitText.text('Procesar Archivos');
-                    submitSpinner.hide();
-                }
+                    
+                    $.ajax({
+                        url: '/upload',
+                        type: 'POST',
+                        data: formData,
+                        processData: false,
+                        contentType: false,
+                        success: function(response) {
+                            Swal.close();
+                            
+                            if (response.error) {
+                                Swal.fire({
+                                    icon: 'error',
+                                    title: 'Error',
+                                    text: response.error,
+                                    confirmButtonColor: 'var(--primary-color)'
+                                });
+                                return;
+                            }
+                            
+                            const link = document.createElement('a');
+                            link.href = `/download?filename=${encodeURIComponent(response.filename)}`;
+                            link.download = response.filename;
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                            
+                            files = [];
+                            fileInput.val('');
+                            fileList.empty();
+                            updateUI();
+                            
+                            setTimeout(() => {
+                                Swal.fire({
+                                    icon: 'success',
+                                    title: '¡Conversión exitosa!',
+                                    text: 'Tus archivos se han procesado correctamente',
+                                    confirmButtonColor: 'var(--primary-color)'
+                                });
+                            }, 1000);
+                        },
+                        error: function(xhr) {
+                            Swal.close();
+                            let errorMsg = 'Ocurrió un error al procesar los archivos';
+                            
+                            try {
+                                const response = JSON.parse(xhr.responseText);
+                                if (response.error) {
+                                    errorMsg = response.error;
+                                }
+                            } catch (e) {
+                                console.error('Error:', e);
+                            }
+                            
+                            Swal.fire({
+                                icon: 'error',
+                                title: 'Error',
+                                text: errorMsg,
+                                confirmButtonColor: 'var(--primary-color)'
+                            });
+                        },
+                        complete: function() {
+                            submitBtn.prop('disabled', false);
+                            submitText.text('Procesar Archivos');
+                            submitSpinner.hide();
+                        }
+                    });
+                });
             });
-    });
-});
-    });
+        });
     </script>
-    <div class="modal fade" id="nombreArchivoModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">Nombre del archivo resultante</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <div class="mb-3">
-                        <label for="nombreArchivo" class="form-label">Nombre personalizado (sin extensión):</label>
-                        <input type="text" class="form-control" id="nombreArchivo" placeholder="Ej: documentos_combinados">
-                        <div class="form-text">Deja vacío para usar el nombre por defecto</div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                    <button type="button" class="btn btn-primary" id="confirmarNombre">Continuar</button>
-                </div>
-            </div>
-        </div>
-    </div>
-    
 </body>
 </html>
