@@ -16,7 +16,7 @@ from utils.file_utils import allowed_file, validate_file_pairs, save_uploaded_fi
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = tempfile.mkdtemp()
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
 ALLOWED_EXTENSIONS = {'pdf', 'xml'}
 
 @app.route('/health')
