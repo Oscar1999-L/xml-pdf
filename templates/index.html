@@ -716,7 +716,7 @@
                                 });
                             }, 1000);
                         },
-                        error: function(xhr) {
+                        error: function(xhr, status, error) {
                             Swal.close();
                             let errorMsg = 'Ocurrió un error al procesar los archivos';
                             
@@ -726,7 +726,7 @@
                                     errorMsg = response.error;
                                 }
                             } catch (e) {
-                                console.error('Error:', e);
+                                errorMsg = xhr.responseText || error;
                             }
                             
                             Swal.fire({
