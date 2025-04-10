@@ -564,7 +564,7 @@
 
             $('input[name="modo"]').change(function() {
                 currentMode = $(this).val();
-                
+                Swal.close();
                 if (currentMode === 'solopdf') {
                     files = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
                 }

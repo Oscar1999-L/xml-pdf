@@ -1,6 +1,6 @@
 import time
 from PyPDF2 import PdfMerger
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, session
 import os
 import tempfile
 import zipfile
@@ -8,7 +8,11 @@ import fitz  # PyMuPDF
 import io
 import shutil
 from PIL import Image, ImageEnhance
-from threading import Timer
+from threading import Timer, Lock
+import uuid
+from datetime import timedelta
+
+# Importaciones de módulos locales
 from converters.optimizer import optimize_pdf_size
 from converters.xml_to_pdf import XMLtoPDFConverter
 from converters.pdf_processor import PDFProcessor
@@ -17,17 +21,44 @@ from utils.file_utils import allowed_file, validate_file_pairs, save_uploaded_fi
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = tempfile.mkdtemp()
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
+app.config['SECRET_KEY'] = os.urandom(24)  # Clave secreta aleatoria
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 ALLOWED_EXTENSIONS = {'pdf', 'xml'}
+
+# Sistema de manejo de archivos por usuario
+processed_files_lock = Lock()
+processed_files = {}
 
 @app.route('/health')
 def health_check():
     return "OK", 200
 
-last_processed_file = None
+@app.before_request
+def before_request():
+    # Inicializar sesión si no existe
+    if 'user_id' not in session:
+        session['user_id'] = str(uuid.uuid4())
+        session.permanent = True
+
+def cleanup_user_files(user_id):
+    """Limpia los archivos de un usuario específico"""
+    with processed_files_lock:
+        if user_id in processed_files:
+            file_info = processed_files.pop(user_id)
+            try:
+                if os.path.exists(file_info['path']):
+                    os.remove(file_info['path'])
+                    temp_dir = os.path.dirname(file_info['path'])
+                    if os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir)
+            except Exception as e:
+                app.logger.error(f"Error cleaning user {user_id} files: {str(e)}")
 
 def cleanup_temp_files(temp_dir):
+    """Limpia archivos temporales de forma segura"""
     try:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
     except Exception as e:
         app.logger.error(f"Error al limpiar archivos temporales: {str(e)}")
 
@@ -37,7 +68,9 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_files():
-    global last_processed_file
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'Sesión no válida'}), 401
     
     try:
         # Validación básica de parámetros
@@ -76,8 +109,8 @@ def upload_files():
             if not valid_files:
                 return jsonify({'error': 'Se requieren archivos PDF en este modo'}), 400
 
-        # Crear directorios temporales
-        temp_dir = tempfile.mkdtemp()
+        # Crear directorios temporales únicos por usuario
+        temp_dir = tempfile.mkdtemp(prefix=f"user_{user_id}_")
         output_dir = os.path.join(temp_dir, 'output')
         os.makedirs(output_dir, exist_ok=True)
         
@@ -116,7 +149,11 @@ def upload_files():
                     # Procesar PDF
                     pdf_output = os.path.join(output_dir, f"{base_name}_processed.pdf")
                     if grayscale:
-                        optimized_pdf = optimize_pdf_size(files['pdf'], output_dir=output_dir, grayscale=True)
+                        optimized_pdf = optimize_pdf_size(
+                            input_path=files['pdf'],
+                            output_dir=output_dir,
+                            grayscale=True
+                        )
                         if optimized_pdf:
                             shutil.move(optimized_pdf, pdf_output)
                     else:
@@ -199,11 +236,11 @@ def upload_files():
                         saved_files, 
                         output_path=output_pdf, 
                         modo="completo",
-                        grayscale=grayscale  # Pasar el parámetro correctamente
+                        grayscale=grayscale
                     )
                     
                     if result and os.path.exists(output_pdf):
-                        combined_pdfs.append(output_pdf)  # Ya no necesitamos post-procesamiento
+                        combined_pdfs.append(output_pdf)
                         
                 except Exception as e:
                     app.logger.error(f"Error combinando archivos completos: {str(e)}")
@@ -215,7 +252,7 @@ def upload_files():
             if not combined_pdfs:
                 return jsonify({'error': 'No se generaron archivos de salida'}), 500
 
-            zip_filename = f"{zip_output_name}.zip"
+            zip_filename = f"{zip_output_name}_{user_id}.zip"
             zip_path = os.path.join(temp_dir, zip_filename)
 
             with zipfile.ZipFile(zip_path, 'w') as zipf:
@@ -223,8 +260,16 @@ def upload_files():
                     if os.path.exists(pdf):
                         zipf.write(pdf, os.path.basename(pdf))
 
-            last_processed_file = zip_path
-            Timer(300, lambda: cleanup_temp_files(temp_dir)).start()
+            # Guardar referencia al archivo con lock
+            with processed_files_lock:
+                processed_files[user_id] = {
+                    'path': zip_path,
+                    'timestamp': time.time()
+                }
+
+            # Programar limpieza
+            cleanup_time = 300  # 5 minutos
+            Timer(cleanup_time, cleanup_user_files, args=[user_id]).start()
 
             return jsonify({
                 'success': True,
@@ -245,25 +290,33 @@ def upload_files():
 
 @app.route('/download', methods=['GET'])
 def download_file():
-    global last_processed_file
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'Sesión no válida'}), 401
+
+    with processed_files_lock:
+        file_info = processed_files.get(user_id)
     
-    if not last_processed_file or not os.path.exists(last_processed_file):
-        return jsonify({'error': 'El archivo no se encontraba disponible en el sitio. Por favor, intenta procesar los archivos nuevamente.'}), 404
+    if not file_info or not os.path.exists(file_info['path']):
+        return jsonify({'error': 'El archivo no está disponible o ha expirado. Por favor, procesa los archivos nuevamente.'}), 404
     
     try:
-        filename = request.args.get('filename', os.path.basename(last_processed_file))
-        return send_file(
-            last_processed_file,
+        filename = request.args.get('filename', os.path.basename(file_info['path']))
+        response = send_file(
+            file_info['path'],
             as_attachment=True,
             download_name=filename,
             mimetype='application/zip'
         )
+        
+        # Limpiar después de descargar
+        Timer(1, cleanup_user_files, args=[user_id]).start()
+        
+        return response
     except Exception as e:
         app.logger.error(f"Error al descargar archivo: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-
-
 if __name__ == '__main__':
-   port = int(os.environ.get('PORT', 5000))
-   app.run(host='0.0.0.0', port=port)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
